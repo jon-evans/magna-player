@@ -3,13 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Magna Player — Inner (mobile-safe)</title>
+<title>Magna Player — Inner (mobile-safe + robust cue)</title>
 <style>
   :root { --bg:#121212; --panel:#181818; --muted:#b3b3b3; --track:#2a2a2a; --accent:#1DB954; }
   html,body{margin:0;height:100%;background:transparent}
   body{display:grid;place-items:center;font:14px/1.3 Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#fff}
 
-  /* Base size; we optionally scale to fit the iframe via ?fit=... */
   .scaler { position: relative; width: 370px; height: 475px; transform-origin: top left; }
 
   .card{width:370px;height:475px;border-radius:16px;overflow:hidden;
@@ -49,7 +48,6 @@
   .rartist{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rdur{color:#ffffffaa;font-variant-numeric:tabular-nums;font-size:12px}
 
-  /* iOS unmute overlay */
   .overlay {
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(0,0,0,.55); backdrop-filter:saturate(120%) blur(2px); z-index:50;
@@ -60,7 +58,6 @@
     background:#fff; color:#000; font-weight:700; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.35);
   }
 
-  /* debug HUD */
   .hud { position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,.55); padding:6px 8px; border-radius:8px; font-size:11px; display:none }
   .hud.show { display:block }
 </style>
@@ -108,12 +105,10 @@
       <div class="list" id="trackList"></div>
     </div>
 
-    <!-- iOS “Tap to unmute” overlay -->
     <div id="overlay" class="overlay">
       <button id="btnUnmute">Tap to unmute</button>
     </div>
 
-    <!-- Debug HUD -->
     <div id="hud" class="hud"></div>
   </div>
 
@@ -196,46 +191,71 @@
     if(autoplay) playWithCue();
   }
 
-  function applyCueOnceIfReady(){
-    const tr=tracks[idx];
-    if(!cueApplied.has(idx) && tr.cue && tr.cue>0 && Number.isFinite(audio.duration)){
-      audio.currentTime=Math.min(tr.cue,Math.max(0,audio.duration-0.25));
-      cueApplied.add(idx);
-    }
+  // --- Robust cue application: try at several lifecycle points + timed retries ---
+  function ensureCue(){
+    const tr = tracks[idx];
+    const cue = Math.max(0, tr.cue||0);
+    if (cue === 0 || cueApplied.has(idx)) return;
+
+    let tries = 0;
+    const trySeek = () => {
+      if (cueApplied.has(idx)) return;
+      if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+      const target = Math.min(cue, Math.max(0, audio.duration - 0.25)); // avoid exact end
+      // Only seek if we're not already near the cue
+      if (Math.abs((audio.currentTime||0) - target) > 0.25) {
+        try { audio.currentTime = target; } catch(e){}
+      }
+      // Mark applied once we're close enough or after a few attempts during 'playing'
+      if (Math.abs((audio.currentTime||0) - target) <= 0.3 || tries >= 4) {
+        cueApplied.add(idx);
+      }
+      tries++;
+    };
+
+    // wire up one-shots
+    audio.addEventListener('loadedmetadata', trySeek, { once:true });
+    audio.addEventListener('canplay',        trySeek, { once:true });
+    audio.addEventListener('playing',        trySeek, { once:true });
+
+    // timed nudges (covers iOS delays)
+    setTimeout(trySeek, 150);
+    setTimeout(trySeek, 400);
+    setTimeout(trySeek, 800);
   }
 
-  // Try unmuted first. If NotAllowed, show explicit overlay (second gesture) on iOS.
   function startPlayback(){
-    audio.muted = false; // try clean start
+    ensureCue();               // prepare cue hooks before play
+    audio.muted = false;       // attempt clean start
     const p = audio.play();
     if (p && typeof p.then==='function'){
       p.then(()=>{
-        if (Number.isFinite(audio.duration)) applyCueOnceIfReady();
-        else { audio.addEventListener('loadedmetadata',applyCueOnceIfReady,{once:true}); audio.addEventListener('canplay',applyCueOnceIfReady,{once:true}); }
+        ensureCue();           // if duration just appeared, nudge cue again
         setPrimaryIcon(true);
       }).catch(err=>{
-        // iOS in iframe often rejects first play; require a second explicit gesture
-        if (isiOS && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
+        // iOS in iframe often rejects first play; require explicit unmute tap
+        if ((/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1))
+            && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
           overlay.classList.add('show');
         } else {
           console.warn('audio.play() failed:', err);
         }
         setPrimaryIcon(false);
       });
+    } else {
+      setPrimaryIcon(true);
     }
   }
 
   function playWithCue(){ startPlayback(); }
 
-  // Overlay button = guaranteed user gesture inside iframe: unmute + play again
+  // Overlay button = guaranteed gesture inside iframe
   btnUnmute.addEventListener('click', ()=>{
     overlay.classList.remove('show');
+    ensureCue();
     audio.muted = false;
-    audio.play().then(()=>{
-      if (Number.isFinite(audio.duration)) applyCueOnceIfReady();
-      else { audio.addEventListener('loadedmetadata',applyCueOnceIfReady,{once:true}); audio.addEventListener('canplay',applyCueOnceIfReady,{once:true}); }
-      setPrimaryIcon(true);
-    }).catch(e=>{ console.warn('Second play still blocked:', e); setPrimaryIcon(false); });
+    audio.play().then(()=>{ ensureCue(); setPrimaryIcon(true); })
+                .catch(e=>{ console.warn('Second play blocked:', e); setPrimaryIcon(false); });
   });
 
   // controls
@@ -248,6 +268,7 @@
   ['pointerdown','click','touchend','keydown'].forEach(evt=>primaryToggle.addEventListener(evt,onPrimaryToggle,{passive:true}));
   audio.addEventListener('play', ()=>setPrimaryIcon(true));
   audio.addEventListener('pause',()=>setPrimaryIcon(false));
+
   btnNext.onclick=()=>{ idx=(idx+1)%tracks.length; switchTo(idx,true); };
   btnPrev.onclick=()=>{ idx=(idx-1+tracks.length)%tracks.length; switchTo(idx,true); };
 
@@ -260,16 +281,13 @@
     tRemain.textContent  = '-' + fmt(Math.max(0, dur - cur));
     if (showDebug) debug();
   });
-  audio.addEventListener('loadedmetadata',()=>{
-    seek.max = Number.isFinite(audio.duration) ? audio.duration : (tracks[idx].duration || 0);
-    fill(seek, seek.value, seek.max, '#1db954');
-  });
+  audio.addEventListener('loadedmetadata',()=>{ seek.max = Number.isFinite(audio.duration) ? audio.duration : (tracks[idx].duration || 0); fill(seek, seek.value, seek.max, '#1db954'); });
   audio.addEventListener('ended',()=>btnNext.click());
   seek.addEventListener('input',()=>{ seek.dragging=true; fill(seek, Number(seek.value||0), Number(seek.max||0), '#1db954'); });
   seek.addEventListener('change',()=>{ audio.currentTime = Number(seek.value||0); seek.dragging=false; });
   volume.addEventListener('input',()=>{ fill(volume, volume.value, 1, '#ffffff'); if (!isiOS) audio.volume = Number(volume.value); });
 
-  // preload durations
+  // preload durations (best effort; mobile may ignore)
   tracks.forEach((tr,i)=>{
     const a=new Audio(); a.preload='metadata'; a.src=tr.src;
     a.addEventListener('loadedmetadata', ()=>{
@@ -283,7 +301,7 @@
   function debug(){
     hud.classList.toggle('show', showDebug);
     if (!showDebug) return;
-    hud.textContent = `iOS:${isiOS} muted:${audio.muted} paused:${audio.paused} vol:${audio.volume?.toFixed?.(2)} ct:${(audio.currentTime||0).toFixed(1)} rs:${audio.readyState}`;
+    hud.textContent = `muted:${audio.muted} paused:${audio.paused} vol:${audio.volume?.toFixed?.(2)} ct:${(audio.currentTime||0).toFixed(1)} dur:${(audio.duration||0).toFixed(1)} rs:${audio.readyState}`;
   }
 
   // init
