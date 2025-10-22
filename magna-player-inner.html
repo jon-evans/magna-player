@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Magna Player — Inner (mobile-safe + robust cue)</title>
+<title>Magna Player — Inner</title>
 <style>
   :root { --bg:#121212; --panel:#181818; --muted:#b3b3b3; --track:#2a2a2a; --accent:#1DB954; }
   html,body{margin:0;height:100%;background:transparent}
   body{display:grid;place-items:center;font:14px/1.3 Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#fff}
 
-  .scaler { position: relative; width: 370px; height: 475px; transform-origin: top left; }
+  /* Base UI size; we scale this wrapper to the iframe via ?fit=... */
+  .scaler{position:relative;width:370px;height:475px;transform-origin:top left}
 
   .card{width:370px;height:475px;border-radius:16px;overflow:hidden;
         background:radial-gradient(120% 120% at 0% 0%, #2a0f15 0%, var(--bg) 45%, #0e0e0e 100%);
@@ -26,11 +27,7 @@
   .controls{display:flex;gap:10px;align-items:center;justify-content:center}
   .btn{width:32px;height:32px;border-radius:999px;border:0;background:#232323;color:#fff;display:grid;place-items:center;cursor:pointer}
   .btn:hover{background:#2b2b2b}
-
-  .playPrimary{
-    width:48px;height:48px;border-radius:999px;border:0;background:var(--accent);color:#000;
-    display:grid;place-items:center;box-shadow:0 8px 20px rgba(29,185,84,.35); cursor:pointer;
-  }
+  .playPrimary{width:48px;height:48px;border-radius:999px;border:0;background:var(--accent);color:#000;display:grid;place-items:center;box-shadow:0 8px 20px rgba(29,185,84,.35);cursor:pointer}
   .playPrimary svg{transform:translateX(1px)}
 
   .seek{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center}
@@ -48,18 +45,14 @@
   .rartist{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rdur{color:#ffffffaa;font-variant-numeric:tabular-nums;font-size:12px}
 
-  .overlay {
-    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    background:rgba(0,0,0,.55); backdrop-filter:saturate(120%) blur(2px); z-index:50;
-  }
-  .overlay.show { display:flex; }
-  .overlay button {
-    appearance:none; border:0; border-radius:999px; padding:10px 16px;
-    background:#fff; color:#000; font-weight:700; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.35);
-  }
+  /* iOS unmute overlay */
+  .overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);backdrop-filter:saturate(120%) blur(2px);z-index:50}
+  .overlay.show{display:flex}
+  .overlay button{appearance:none;border:0;border-radius:999px;padding:10px 16px;background:#fff;color:#000;font-weight:700;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.35)}
 
-  .hud { position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,.55); padding:6px 8px; border-radius:8px; font-size:11px; display:none }
-  .hud.show { display:block }
+  /* debug HUD */
+  .hud{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:8px;font-size:11px;display:none}
+  .hud.show{display:block}
 </style>
 </head>
 <body>
@@ -78,11 +71,9 @@
           <button class="btn" id="btnPrev" aria-label="Previous">
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 6h2v12H6zM20 6v12L9 12z" fill="currentColor"/></svg>
           </button>
-
           <button class="playPrimary" id="primaryToggle" aria-label="Play" aria-pressed="false" title="Play/Pause" tabindex="0">
             <svg viewBox="0 0 24 24" width="22" height="22"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
           </button>
-
           <button class="btn" id="btnNext" aria-label="Next">
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 6h-2v12h2zM4 6v12l11-6z" fill="currentColor"/></svg>
           </button>
@@ -105,10 +96,9 @@
       <div class="list" id="trackList"></div>
     </div>
 
-    <div id="overlay" class="overlay">
-      <button id="btnUnmute">Tap to unmute</button>
-    </div>
-
+    <!-- iOS “Tap to unmute / load” overlay -->
+    <div id="overlay" class="overlay"><button id="btnUnmute">Tap to play</button></div>
+    <!-- Debug HUD -->
     <div id="hud" class="hud"></div>
   </div>
 
@@ -117,61 +107,57 @@
 <script>
   /* ------- AUTO-FIT to iframe viewport (optional via ?fit=...) ------- */
   (function(){
-    const BASE_W = 370, BASE_H = 475;
-    const params = new URLSearchParams(location.search);
-    const mode = (params.get('fit') || 'contain').toLowerCase(); // contain|cover|width|height|none
-    const scaler = document.getElementById('scaler');
+    const BASE_W=370, BASE_H=475;
+    const params=new URLSearchParams(location.search);
+    const mode=(params.get('fit')||'contain').toLowerCase(); // contain|cover|width|height|none
+    const scaler=document.getElementById('scaler');
     function applyScale(){
-      const w = innerWidth || document.documentElement.clientWidth;
-      const h = innerHeight || document.documentElement.clientHeight;
-      let s = 1;
-      if (mode==='width') s = w/BASE_W;
-      else if (mode==='height') s = h/BASE_H;
-      else if (mode==='cover') s = Math.max(w/BASE_W, h/BASE_H);
-      else if (mode==='none') s = 1;
-      else s = Math.min(w/BASE_W, h/BASE_H); // contain
-      scaler.style.transform = `scale(${s})`;
-      const sx = Math.max(0, (w - BASE_W*s)/2), sy = Math.max(0, (h - BASE_H*s)/2);
-      scaler.style.marginLeft = sx + 'px'; scaler.style.marginTop = sy + 'px';
+      const w=innerWidth||document.documentElement.clientWidth;
+      const h=innerHeight||document.documentElement.clientHeight;
+      let s=1;
+      if(mode==='width') s=w/BASE_W;
+      else if(mode==='height') s=h/BASE_H;
+      else if(mode==='cover') s=Math.max(w/BASE_W,h/BASE_H);
+      else if(mode==='none') s=1;
+      else s=Math.min(w/BASE_W,h/BASE_H); // contain
+      scaler.style.transform=`scale(${s})`;
+      const sx=Math.max(0,(w-BASE_W*s)/2), sy=Math.max(0,(h-BASE_H*s)/2);
+      scaler.style.marginLeft=sx+'px'; scaler.style.marginTop=sy+'px';
     }
-    addEventListener('resize', applyScale);
-    addEventListener('orientationchange', applyScale);
-    setTimeout(applyScale, 0);
+    addEventListener('resize',applyScale);
+    addEventListener('orientationchange',applyScale);
+    setTimeout(applyScale,0);
   })();
 
   /* ------- PLAYER ------- */
-  const tracks = [
-    { title:"Feeling Good", artist:"Nina Simone",
-      src:"https://dl.dropboxusercontent.com/scl/fi/tcj7u7lcp65xmij4dpuvn/Nina-Simone-Feeling-Good.mp3?rlkey=p084vdavohinmffnzgdr11xxq",
-      art:"https://dl.dropboxusercontent.com/scl/fi/iq89ty1huqnxczgjors0y/Nina-Simone-Feeling-Good.jpeg?rlkey=k4vmls9ka25t8r5asck1c8f1x", cue:36 },
-    { title:"Superfly", artist:"Curtis Mayfield",
-      src:"https://dl.dropboxusercontent.com/scl/fi/hiziozuzk9l6ge0fopvrm/Curtis-Mayfield-Superfly.mp3?rlkey=ym6v61vri7i8eg6g7y7w17rns",
-      art:"https://dl.dropboxusercontent.com/scl/fi/tapoyydvg9esxnectex4a/Curtis-Mayfield-Superfly.jpeg?rlkey=lzm61ien7z87so1dziobaw0tz", cue:0 },
-    { title:"GhettoMusick", artist:"Outkast",
-      src:"https://dl.dropboxusercontent.com/scl/fi/ymx1ziyc64kxj1bji9qab/Outkast-GhettoMusick.mp3?rlkey=ir91xtqwerg9t6smj7hj99l9p",
-      art:"https://dl.dropboxusercontent.com/scl/fi/n7cg50u3xoyosvp37jmwp/Outkast-GhettoMusick.jpeg?rlkey=9g60kj304r7e0fmtqtb2ady90", cue:75 },
-    { title:"Express Yourself", artist:"Charles Wright & The Watts...",
-      src:"https://dl.dropboxusercontent.com/scl/fi/5k9tqpx7jvohuhk3vqdko/Charles-Wright-The-Watts-103rd-Street-Rhythm-Band-Express-Yourself.mp3?rlkey=1q5r7lm4kww9co9meedfivlkr",
-      art:"https://dl.dropboxusercontent.com/scl/fi/s4t6gjvb6xdvivexlwoe2/Charles-Wright-The-Watts-103rd-Street-Rhythm-Band-Express-Yourself.jpeg?rlkey=wmrwap67l1o3e8yojsyb8rbtk", cue:0 }
+  const tracks=[
+    {title:"Feeling Good",artist:"Nina Simone",
+     src:"https://dl.dropboxusercontent.com/scl/fi/tcj7u7lcp65xmij4dpuvn/Nina-Simone-Feeling-Good.mp3?rlkey=p084vdavohinmffnzgdr11xxq",
+     art:"https://dl.dropboxusercontent.com/scl/fi/iq89ty1huqnxczgjors0y/Nina-Simone-Feeling-Good.jpeg?rlkey=k4vmls9ka25t8r5asck1c8f1x",cue:36},
+    {title:"Superfly",artist:"Curtis Mayfield",
+     src:"https://dl.dropboxusercontent.com/scl/fi/hiziozuzk9l6ge0fopvrm/Curtis-Mayfield-Superfly.mp3?rlkey=ym6v61vri7i8eg6g7y7w17rns",
+     art:"https://dl.dropboxusercontent.com/scl/fi/tapoyydvg9esxnectex4a/Curtis-Mayfield-Superfly.jpeg?rlkey=lzm61ien7z87so1dziobaw0tz",cue:0},
+    {title:"GhettoMusick",artist:"Outkast",
+     src:"https://dl.dropboxusercontent.com/scl/fi/ymx1ziyc64kxj1bji9qab/Outkast-GhettoMusick.mp3?rlkey=ir91xtqwerg9t6smj7hj99l9p",
+     art:"https://dl.dropboxusercontent.com/scl/fi/n7cg50u3xoyosvp37jmwp/Outkast-GhettoMusick.jpeg?rlkey=9g60kj304r7e0fmtqtb2ady90",cue:75},
+    {title:"Express Yourself",artist:"Charles Wright & The Watts...",
+     src:"https://dl.dropboxusercontent.com/scl/fi/5k9tqpx7jvohuhk3vqdko/Charles-Wright-The-Watts-103rd-Street-Rhythm-Band-Express-Yourself.mp3?rlkey=1q5r7lm4kww9co9meedfivlkr",
+     art:"https://dl.dropboxusercontent.com/scl/fi/s4t6gjvb6xdvivexlwoe2/Charles-Wright-The-Watts-103rd-Street-Rhythm-Band-Express-Yourself.jpeg?rlkey=wmrwap67l1o3e8yojsyb8rbtk",cue:0}
   ];
 
-  const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const params = new URLSearchParams(location.search);
-  const showDebug = params.get('debug') === '1';
+  const isiOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  const params=new URLSearchParams(location.search); const showDebug=params.get('debug')==='1';
 
   const $=s=>document.querySelector(s);
   const audio=$('#audio'), art=$('#art'), title=$('#title'), artist=$('#artist');
-  const primaryToggle=$('#primaryToggle');
-  const btnNext=$('#btnNext'), btnPrev=$('#btnPrev');
+  const primaryToggle=$('#primaryToggle'); const btnNext=$('#btnNext'), btnPrev=$('#btnPrev');
   const seek=$('#seek'), volume=$('#volume'), tElapsed=$('#tElapsed'), tRemain=$('#tRemain'), list=$('#trackList');
-  const overlay=$('#overlay'), btnUnmute=$('#btnUnmute');
-  const hud=$('#hud');
+  const overlay=$('#overlay'), btnUnmute=$('#btnUnmute'); const hud=$('#hud');
   const fmt=s=>{s=Math.max(0,Math.floor(s));const m=(s/60)|0,ss=String(s%60).padStart(2,'0');return `${m}:${ss}`;};
   let idx=0, cueApplied=new Set();
-
   const trackColor=getComputedStyle(document.documentElement).getPropertyValue('--track').trim();
   function fill(el,value,max,color){const m=Number(max)||0,v=Math.max(0,Number(value)||0);const pct=m>0?Math.min(100,(v/m)*100):0;el.style.background=`linear-gradient(to right, ${color} ${pct}%, ${trackColor} ${pct}%)`;}
-  function setPrimaryIcon(p){primaryToggle.setAttribute('aria-pressed',p?'true':'false');primaryToggle.setAttribute('aria-label',p?'Pause':'Play');primaryToggle.innerHTML=p?'<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor"/></svg>':'<svg viewBox="0 0 24 24" width="22" height="22"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>'; }
+  function setPrimaryIcon(p){primaryToggle.setAttribute('aria-pressed',p?'true':'false');primaryToggle.setAttribute('aria-label',p?'Pause':'Play');primaryToggle.innerHTML=p?'<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor"/></svg>':'<svg viewBox="0 0 24 24" width="22" height="22"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';}
 
   function renderList(){
     list.innerHTML=tracks.map((tr,i)=>`<div class="row${i===idx?' active':''}" data-i="${i}">
@@ -180,179 +166,128 @@
     list.querySelectorAll('.row').forEach(r=>{r.onclick=()=>switchTo(+r.dataset.i,true);r.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();r.click();}};r.tabIndex=0;});
   }
 
-  function switchTo(i,autoplay=false){
-  idx=i;
-  document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active',+el.dataset.i===idx));
-  const tr=tracks[idx];
-  title.textContent=tr.title; artist.textContent=tr.artist; art.src=tr.art;
-  audio.src = tr.src;
-  audio.load(); // <-- ADD THIS LINE (important for iOS inside iframes)
-  if (!isiOS) audio.volume = Number(volume.value); // iOS ignores programmatic volume
-  cueApplied.delete(idx);
-  seek.value=0; seek.max=tr.duration||0; fill(seek,0,seek.max,'#1db954');
-  tElapsed.textContent='0:00'; tRemain.textContent=tr.duration?('-'+fmt(tr.duration)):'-0:00';
-  if (autoplay) playWithCue();
-}
-
-  // --- NEW helper: insist on playing after a seek (iOS/WebKit quirk) ---
-function forcePlayAfterSeek() {
-  const tryPlay = () => {
-    const p = audio.play();
-    if (p && typeof p.then === 'function') {
-      p.catch(()=>{/* ignore, we’ll nudge again */});
-    }
-  };
-  // try immediately
-  tryPlay();
-  // try once the seek completes
-  const onSeeked = () => { tryPlay(); audio.removeEventListener('seeked', onSeeked); };
-  audio.addEventListener('seeked', onSeeked);
-  // and a tiny timeout nudge
-  setTimeout(tryPlay, 120);
-};
-  
-// --- Robust cue application: try at several lifecycle points + timed retries ---
-function ensureCue(){
-  const tr = tracks[idx];
-  const cue = Math.max(0, tr.cue||0);
-  if (cue === 0 || cueApplied.has(idx)) return;
-
-  let tries = 0;
-  const trySeek = () => {
-    if (cueApplied.has(idx)) return;
-    if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
-
-    const target = Math.min(cue, Math.max(0, audio.duration - 0.25)); // avoid exact end
-    const before = audio.currentTime || 0;
-
-    if (Math.abs(before - target) > 0.25) {
-      try { audio.currentTime = target; } catch(e){}
-    }
-    const after = audio.currentTime || 0;
-
-    if (Math.abs(after - target) <= 0.3 || tries >= 4) {
-      cueApplied.add(idx);
-      // if we actually moved near the cue and playback didn't start, push play again
-      if (audio.paused) forcePlayAfterSeek();
-      return;
-    }
-    tries++;
-  };
-
-  // one-shots around the first load/start
-  audio.addEventListener('loadedmetadata', trySeek, { once:true });
-  audio.addEventListener('canplay',        trySeek, { once:true });
-  audio.addEventListener('playing',        trySeek, { once:true });
-
-  // timed nudges (covers iOS delays)
-  setTimeout(trySeek, 120);
-  setTimeout(trySeek, 300);
-  setTimeout(trySeek, 700);
-};
-
-    // wire up one-shots
-    audio.addEventListener('loadedmetadata', trySeek, { once:true });
-    audio.addEventListener('canplay',        trySeek, { once:true });
-    audio.addEventListener('playing',        trySeek, { once:true });
-
-    // timed nudges (covers iOS delays)
-    setTimeout(trySeek, 150);
-    setTimeout(trySeek, 400);
-    setTimeout(trySeek, 800);
+  // FORCE play after seeking (iOS quirk)
+  function forcePlayAfterSeek(){
+    const tryPlay=()=>{const p=audio.play(); if(p&&typeof p.then==='function'){p.catch(()=>{});} };
+    tryPlay();
+    const onSeeked=()=>{tryPlay(); audio.removeEventListener('seeked',onSeeked);};
+    audio.addEventListener('seeked',onSeeked);
+    setTimeout(tryPlay,120);
   }
 
-  // --- start playback with explicit load + cue + post-seek play nudges ---
-function startPlayback(){
-  // Prep cue hooks *before* first play attempt
-  ensureCue();
-
-  // Try clean unmuted start
-  audio.muted = false;
-  const p = audio.play();
-
-  if (p && typeof p.then === 'function') {
-    p.then(()=>{
-      // If iOS accepted the seek but didn't actually start, insist
-      if (audio.paused) forcePlayAfterSeek();
-      setPrimaryIcon(true);
-    }).catch(err=>{
-      // iOS in iframes often blocks first attempt; show your overlay if present
-      if ((/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1))
-          && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
-        if (typeof overlay !== 'undefined' && overlay) overlay.classList.add('show');
-      } else {
-        console.warn('audio.play() failed:', err);
+  // Robust cue application
+  function ensureCue(){
+    const tr=tracks[idx]; const cue=Math.max(0,tr.cue||0); if(cue===0||cueApplied.has(idx))return;
+    let tries=0;
+    const trySeek=()=>{
+      if(cueApplied.has(idx))return;
+      if(!Number.isFinite(audio.duration)||audio.duration<=0)return;
+      const target=Math.min(cue,Math.max(0,audio.duration-0.25));
+      const before=audio.currentTime||0;
+      if(Math.abs(before-target)>0.25){ try{audio.currentTime=target;}catch(e){} }
+      const after=audio.currentTime||0;
+      if(Math.abs(after-target)<=0.3||tries>=4){
+        cueApplied.add(idx);
+        if(audio.paused) forcePlayAfterSeek();
+        return;
       }
-      setPrimaryIcon(false);
-    });
-  } else {
-    // Non-promise browsers
-    if (audio.paused) forcePlayAfterSeek();
-    setPrimaryIcon(true);
+      tries++;
+    };
+    audio.addEventListener('loadedmetadata',trySeek,{once:true});
+    audio.addEventListener('canplay',trySeek,{once:true});
+    audio.addEventListener('playing',trySeek,{once:true});
+    setTimeout(trySeek,120); setTimeout(trySeek,300); setTimeout(trySeek,700);
   }
-}
 
+  function switchTo(i,autoplay=false){
+    idx=i; document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active',+el.dataset.i===idx));
+    const tr=tracks[idx]; title.textContent=tr.title; artist.textContent=tr.artist; art.src=tr.art;
+    audio.src=tr.src; audio.load();               // IMPORTANT on iOS inside iframes
+    if(!isiOS) audio.volume=Number(volume.value); // iOS ignores programmatic volume
+    cueApplied.delete(idx);
+    seek.value=0; seek.max=tr.duration||0; fill(seek,0,seek.max,'#1db954');
+    tElapsed.textContent='0:00'; tRemain.textContent=tr.duration?('-'+fmt(tr.duration)):'-0:00';
+    if(autoplay) playWithCue();
+  }
+
+  function startPlayback(){
+    ensureCue();        // prep cue hooks before first play
+    audio.muted=false;  // try clean start
+    const p=audio.play();
+    if(p&&typeof p.then==='function'){
+      p.then(()=>{ if(audio.paused) forcePlayAfterSeek(); setPrimaryIcon(true); })
+       .catch(err=>{
+         // iOS often blocks first attempt in an iframe — show explicit tap overlay
+         if(isiOS && (err?.name==='NotAllowedError'||err?.name==='AbortError')) overlay.classList.add('show');
+         else console.warn('audio.play() failed:',err);
+         setPrimaryIcon(false);
+       });
+    }else{
+      if(audio.paused) forcePlayAfterSeek();
+      setPrimaryIcon(true);
+    }
+  }
   function playWithCue(){ startPlayback(); }
 
-  // Overlay button = guaranteed gesture inside iframe
-  btnUnmute.addEventListener('click', ()=>{
+  // Overlay = guaranteed user gesture
+  btnUnmute.addEventListener('click',()=>{
     overlay.classList.remove('show');
-    ensureCue();
-    audio.muted = false;
+    ensureCue(); audio.muted=false;
     audio.play().then(()=>{ ensureCue(); setPrimaryIcon(true); })
-                .catch(e=>{ console.warn('Second play blocked:', e); setPrimaryIcon(false); });
+                .catch(e=>{ console.warn('Second play blocked:',e); setPrimaryIcon(false); });
   });
 
-  // controls
+  // Controls
   function onPrimaryToggle(e){
-    if (e.type==='keydown' && !(e.key==='Enter'||e.key===' ')) return;
-    if (e.type==='keydown') e.preventDefault();
-    if (audio.paused) playWithCue();
-    else { audio.pause(); setPrimaryIcon(false); }
+    if(e.type==='keydown'&&!(e.key==='Enter'||e.key===' ')) return;
+    if(e.type==='keydown') e.preventDefault();
+    if(audio.paused) playWithCue(); else { audio.pause(); setPrimaryIcon(false); }
   }
   ['pointerdown','click','touchend','keydown'].forEach(evt=>primaryToggle.addEventListener(evt,onPrimaryToggle,{passive:true}));
-  audio.addEventListener('play', ()=>setPrimaryIcon(true));
+  audio.addEventListener('play',()=>setPrimaryIcon(true));
   audio.addEventListener('pause',()=>setPrimaryIcon(false));
 
   btnNext.onclick=()=>{ idx=(idx+1)%tracks.length; switchTo(idx,true); };
   btnPrev.onclick=()=>{ idx=(idx-1+tracks.length)%tracks.length; switchTo(idx,true); };
 
-  // progress + volume UI
+  // Progress + volume UI
   audio.addEventListener('timeupdate',()=>{
-    if (!seek.dragging) seek.value = audio.currentTime || 0;
-    fill(seek, seek.value, seek.max, '#1db954');
-    const cur = audio.currentTime||0, dur = Number.isFinite(audio.duration)?audio.duration:(Number(seek.max)||0);
-    tElapsed.textContent = fmt(cur);
-    tRemain.textContent  = '-' + fmt(Math.max(0, dur - cur));
-    if (showDebug) debug();
+    if(!seek.dragging) seek.value=audio.currentTime||0;
+    fill(seek,seek.value,seek.max,'#1db954');
+    const cur=audio.currentTime||0, dur=Number.isFinite(audio.duration)?audio.duration:(Number(seek.max)||0);
+    tElapsed.textContent=fmt(cur); tRemain.textContent='-'+fmt(Math.max(0,dur-cur));
+    if(showDebug) debug();
   });
-  audio.addEventListener('loadedmetadata',()=>{ seek.max = Number.isFinite(audio.duration) ? audio.duration : (tracks[idx].duration || 0); fill(seek, seek.value, seek.max, '#1db954'); });
+  audio.addEventListener('loadedmetadata',()=>{
+    seek.max=Number.isFinite(audio.duration)?audio.duration:(tracks[idx].duration||0);
+    fill(seek,seek.value,seek.max,'#1db954');
+  });
   audio.addEventListener('ended',()=>btnNext.click());
   seek.addEventListener('input',()=>{ seek.dragging=true; fill(seek, Number(seek.value||0), Number(seek.max||0), '#1db954'); });
-  seek.addEventListener('change',()=>{ audio.currentTime = Number(seek.value||0); seek.dragging=false; });
-  volume.addEventListener('input',()=>{ fill(volume, volume.value, 1, '#ffffff'); if (!isiOS) audio.volume = Number(volume.value); });
+  seek.addEventListener('change',()=>{ audio.currentTime=Number(seek.value||0); seek.dragging=false; });
+  volume.addEventListener('input',()=>{ fill(volume,volume.value,1,'#ffffff'); if(!isiOS) audio.volume=Number(volume.value); });
 
-  // preload durations (best effort; mobile may ignore)
+  // Preload durations (best effort on mobile)
   tracks.forEach((tr,i)=>{
     const a=new Audio(); a.preload='metadata'; a.src=tr.src;
-    a.addEventListener('loadedmetadata', ()=>{
+    a.addEventListener('loadedmetadata',()=>{
       tr.duration=a.duration||0;
       const d=document.getElementById(`dur-${i}`); if(d) d.textContent=fmt(tr.duration);
       if(i===0){ seek.max=tr.duration||0; tRemain.textContent='-'+fmt(tr.duration||0); }
     });
   });
 
-  // debug HUD
+  // Debug HUD
   function debug(){
-    hud.classList.toggle('show', showDebug);
-    if (!showDebug) return;
-    hud.textContent = `muted:${audio.muted} paused:${audio.paused} vol:${audio.volume?.toFixed?.(2)} ct:${(audio.currentTime||0).toFixed(1)} dur:${(audio.duration||0).toFixed(1)} rs:${audio.readyState}`;
+    hud.classList.toggle('show',showDebug);
+    if(!showDebug) return;
+    hud.textContent=`muted:${audio.muted} paused:${audio.paused} vol:${audio.volume?.toFixed?.(2)} ct:${(audio.currentTime||0).toFixed(1)} dur:${(audio.duration||0).toFixed(1)} rs:${audio.readyState}`;
   }
 
-  // init
+  // Init
   (function init(){
-    renderList(); switchTo(0,false); fill(volume, volume.value, 1, '#ffffff'); setPrimaryIcon(false);
-    if (showDebug) debug();
+    renderList(); switchTo(0,false); fill(volume,volume.value,1,'#ffffff'); setPrimaryIcon(false);
+    if(showDebug) debug();
   })();
 </script>
 </body>
