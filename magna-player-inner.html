@@ -181,37 +181,74 @@
   }
 
   function switchTo(i,autoplay=false){
-    idx=i;document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active',+el.dataset.i===idx));
-    const tr=tracks[idx];title.textContent=tr.title;artist.textContent=tr.artist;art.src=tr.art;
-    audio.src=tr.src;
-    if (!isiOS) audio.volume=Number(volume.value); // iOS ignores programmatic volume
-    cueApplied.delete(idx);
-    seek.value=0;seek.max=tr.duration||0;fill(seek,0,seek.max,'#1db954');
-    tElapsed.textContent='0:00';tRemain.textContent=tr.duration?('-'+fmt(tr.duration)):'-0:00';
-    if(autoplay) playWithCue();
-  }
+  idx=i;
+  document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active',+el.dataset.i===idx));
+  const tr=tracks[idx];
+  title.textContent=tr.title; artist.textContent=tr.artist; art.src=tr.art;
+  audio.src = tr.src;
+  audio.load(); // <-- ADD THIS LINE (important for iOS inside iframes)
+  if (!isiOS) audio.volume = Number(volume.value); // iOS ignores programmatic volume
+  cueApplied.delete(idx);
+  seek.value=0; seek.max=tr.duration||0; fill(seek,0,seek.max,'#1db954');
+  tElapsed.textContent='0:00'; tRemain.textContent=tr.duration?('-'+fmt(tr.duration)):'-0:00';
+  if (autoplay) playWithCue();
+}
 
-  // --- Robust cue application: try at several lifecycle points + timed retries ---
-  function ensureCue(){
-    const tr = tracks[idx];
-    const cue = Math.max(0, tr.cue||0);
-    if (cue === 0 || cueApplied.has(idx)) return;
+  // --- NEW helper: insist on playing after a seek (iOS/WebKit quirk) ---
+function forcePlayAfterSeek() {
+  const tryPlay = () => {
+    const p = audio.play();
+    if (p && typeof p.then === 'function') {
+      p.catch(()=>{/* ignore, we’ll nudge again */});
+    }
+  };
+  // try immediately
+  tryPlay();
+  // try once the seek completes
+  const onSeeked = () => { tryPlay(); audio.removeEventListener('seeked', onSeeked); };
+  audio.addEventListener('seeked', onSeeked);
+  // and a tiny timeout nudge
+  setTimeout(tryPlay, 120);
+};
+  
+// --- Robust cue application: try at several lifecycle points + timed retries ---
+function ensureCue(){
+  const tr = tracks[idx];
+  const cue = Math.max(0, tr.cue||0);
+  if (cue === 0 || cueApplied.has(idx)) return;
 
-    let tries = 0;
-    const trySeek = () => {
-      if (cueApplied.has(idx)) return;
-      if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
-      const target = Math.min(cue, Math.max(0, audio.duration - 0.25)); // avoid exact end
-      // Only seek if we're not already near the cue
-      if (Math.abs((audio.currentTime||0) - target) > 0.25) {
-        try { audio.currentTime = target; } catch(e){}
-      }
-      // Mark applied once we're close enough or after a few attempts during 'playing'
-      if (Math.abs((audio.currentTime||0) - target) <= 0.3 || tries >= 4) {
-        cueApplied.add(idx);
-      }
-      tries++;
-    };
+  let tries = 0;
+  const trySeek = () => {
+    if (cueApplied.has(idx)) return;
+    if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+
+    const target = Math.min(cue, Math.max(0, audio.duration - 0.25)); // avoid exact end
+    const before = audio.currentTime || 0;
+
+    if (Math.abs(before - target) > 0.25) {
+      try { audio.currentTime = target; } catch(e){}
+    }
+    const after = audio.currentTime || 0;
+
+    if (Math.abs(after - target) <= 0.3 || tries >= 4) {
+      cueApplied.add(idx);
+      // if we actually moved near the cue and playback didn't start, push play again
+      if (audio.paused) forcePlayAfterSeek();
+      return;
+    }
+    tries++;
+  };
+
+  // one-shots around the first load/start
+  audio.addEventListener('loadedmetadata', trySeek, { once:true });
+  audio.addEventListener('canplay',        trySeek, { once:true });
+  audio.addEventListener('playing',        trySeek, { once:true });
+
+  // timed nudges (covers iOS delays)
+  setTimeout(trySeek, 120);
+  setTimeout(trySeek, 300);
+  setTimeout(trySeek, 700);
+};
 
     // wire up one-shots
     audio.addEventListener('loadedmetadata', trySeek, { once:true });
@@ -224,28 +261,36 @@
     setTimeout(trySeek, 800);
   }
 
-  function startPlayback(){
-    ensureCue();               // prepare cue hooks before play
-    audio.muted = false;       // attempt clean start
-    const p = audio.play();
-    if (p && typeof p.then==='function'){
-      p.then(()=>{
-        ensureCue();           // if duration just appeared, nudge cue again
-        setPrimaryIcon(true);
-      }).catch(err=>{
-        // iOS in iframe often rejects first play; require explicit unmute tap
-        if ((/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1))
-            && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
-          overlay.classList.add('show');
-        } else {
-          console.warn('audio.play() failed:', err);
-        }
-        setPrimaryIcon(false);
-      });
-    } else {
+  // --- start playback with explicit load + cue + post-seek play nudges ---
+function startPlayback(){
+  // Prep cue hooks *before* first play attempt
+  ensureCue();
+
+  // Try clean unmuted start
+  audio.muted = false;
+  const p = audio.play();
+
+  if (p && typeof p.then === 'function') {
+    p.then(()=>{
+      // If iOS accepted the seek but didn't actually start, insist
+      if (audio.paused) forcePlayAfterSeek();
       setPrimaryIcon(true);
-    }
+    }).catch(err=>{
+      // iOS in iframes often blocks first attempt; show your overlay if present
+      if ((/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1))
+          && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
+        if (typeof overlay !== 'undefined' && overlay) overlay.classList.add('show');
+      } else {
+        console.warn('audio.play() failed:', err);
+      }
+      setPrimaryIcon(false);
+    });
+  } else {
+    // Non-promise browsers
+    if (audio.paused) forcePlayAfterSeek();
+    setPrimaryIcon(true);
   }
+}
 
   function playWithCue(){ startPlayback(); }
 
