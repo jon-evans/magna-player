@@ -167,66 +167,101 @@
   }
 
   // FORCE play after seeking (iOS quirk)
-  function forcePlayAfterSeek(){
-    const tryPlay=()=>{const p=audio.play(); if(p&&typeof p.then==='function'){p.catch(()=>{});} };
-    tryPlay();
-    const onSeeked=()=>{tryPlay(); audio.removeEventListener('seeked',onSeeked);};
-    audio.addEventListener('seeked',onSeeked);
-    setTimeout(tryPlay,120);
-  }
+  // Try very hard to start playback after a seek (iOS quirk)
+function forcePlayAfterSeek() {
+  const tryPlay = () => {
+    const p = audio.play();
+    if (p && typeof p.then === 'function') p.catch(()=>{ /* will retry */ });
+  };
+  tryPlay();                       // now
+  const onSeeked = () => { tryPlay(); audio.removeEventListener('seeked', onSeeked); };
+  audio.addEventListener('seeked', onSeeked);
+  setTimeout(tryPlay, 80);         // shortly after
+  setTimeout(tryPlay, 180);        // one more for luck
+  // If the first timeupdate arrives and we’re still paused, try again
+  const onTU = () => { if (audio.paused) tryPlay(); audio.removeEventListener('timeupdate', onTU); };
+  audio.addEventListener('timeupdate', onTU);
+}
 
   // Robust cue application
   function ensureCue(){
-    const tr=tracks[idx]; const cue=Math.max(0,tr.cue||0); if(cue===0||cueApplied.has(idx))return;
-    let tries=0;
-    const trySeek=()=>{
-      if(cueApplied.has(idx))return;
-      if(!Number.isFinite(audio.duration)||audio.duration<=0)return;
-      const target=Math.min(cue,Math.max(0,audio.duration-0.25));
-      const before=audio.currentTime||0;
-      if(Math.abs(before-target)>0.25){ try{audio.currentTime=target;}catch(e){} }
-      const after=audio.currentTime||0;
-      if(Math.abs(after-target)<=0.3||tries>=4){
-        cueApplied.add(idx);
-        if(audio.paused) forcePlayAfterSeek();
-        return;
-      }
-      tries++;
-    };
-    audio.addEventListener('loadedmetadata',trySeek,{once:true});
-    audio.addEventListener('canplay',trySeek,{once:true});
-    audio.addEventListener('playing',trySeek,{once:true});
-    setTimeout(trySeek,120); setTimeout(trySeek,300); setTimeout(trySeek,700);
-  }
+  const tr = tracks[idx];
+  const cue = Math.max(0, tr.cue || 0);
+  if (cue === 0 || cueApplied.has(idx)) return;
+
+  let tries = 0;
+  const trySeek = () => {
+    if (cueApplied.has(idx)) return;
+    if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+
+    const target = Math.min(cue, Math.max(0, audio.duration - 0.25));
+    const before = audio.currentTime || 0;
+    if (Math.abs(before - target) > 0.25) {
+      try { audio.currentTime = target; } catch(e){}
+    }
+    const after = audio.currentTime || 0;
+
+    if (Math.abs(after - target) <= 0.3 || tries >= 4) {
+      cueApplied.add(idx);
+      if (audio.paused) forcePlayAfterSeek();   // <-- insist on play once cue sticks
+      return;
+    }
+    tries++;
+  };
+
+  audio.addEventListener('loadedmetadata', trySeek, { once:true });
+  audio.addEventListener('canplay',        trySeek, { once:true });
+  audio.addEventListener('playing',        trySeek, { once:true });
+
+  setTimeout(trySeek, 100);
+  setTimeout(trySeek, 250);
+  setTimeout(trySeek, 600);
+}
 
   function switchTo(i,autoplay=false){
-    idx=i; document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active',+el.dataset.i===idx));
-    const tr=tracks[idx]; title.textContent=tr.title; artist.textContent=tr.artist; art.src=tr.art;
-    audio.src=tr.src; audio.load();               // IMPORTANT on iOS inside iframes
-    if(!isiOS) audio.volume=Number(volume.value); // iOS ignores programmatic volume
-    cueApplied.delete(idx);
-    seek.value=0; seek.max=tr.duration||0; fill(seek,0,seek.max,'#1db954');
-    tElapsed.textContent='0:00'; tRemain.textContent=tr.duration?('-'+fmt(tr.duration)):'-0:00';
-    if(autoplay) playWithCue();
-  }
+  idx = i;
+  document.querySelectorAll('.row').forEach(el=>el.classList.toggle('active', +el.dataset.i === idx));
+  const tr = tracks[idx];
+  title.textContent = tr.title; artist.textContent = tr.artist; art.src = tr.art;
+  audio.src = tr.src;
+  audio.load();                         // <-- keep this
+  if (!isiOS) audio.volume = Number(volume.value);
+  cueApplied.delete(idx);
+  seek.value = 0; seek.max = tr.duration || 0; fill(seek,0,seek.max,'#1db954');
+  tElapsed.textContent = '0:00'; tRemain.textContent = tr.duration ? ('-' + fmt(tr.duration)) : '-0:00';
+  if (autoplay) playWithCue();
+}
 
   function startPlayback(){
-    ensureCue();        // prep cue hooks before first play
-    audio.muted=false;  // try clean start
-    const p=audio.play();
-    if(p&&typeof p.then==='function'){
-      p.then(()=>{ if(audio.paused) forcePlayAfterSeek(); setPrimaryIcon(true); })
-       .catch(err=>{
-         // iOS often blocks first attempt in an iframe — show explicit tap overlay
-         if(isiOS && (err?.name==='NotAllowedError'||err?.name==='AbortError')) overlay.classList.add('show');
-         else console.warn('audio.play() failed:',err);
-         setPrimaryIcon(false);
-       });
-    }else{
-      if(audio.paused) forcePlayAfterSeek();
+  ensureCue();                 // prep cue hooks before first play
+  audio.muted = false;         // clean start
+
+  const p = audio.play();
+  if (p && typeof p.then === 'function') {
+    p.then(()=>{
+      // If seek already happened and we’re still paused, push again
+      if (audio.paused) forcePlayAfterSeek();
       setPrimaryIcon(true);
-    }
+    }).catch(err=>{
+      // iOS in iframes often blocks the *first* attempt → show overlay
+      if ((/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1))
+          && (err?.name==='NotAllowedError' || err?.name==='AbortError')) {
+        if (typeof overlay !== 'undefined' && overlay) overlay.classList.add('show');
+      } else {
+        console.warn('audio.play() failed:', err);
+      }
+      setPrimaryIcon(false);
+    });
+  } else {
+    // Non-promise browsers
+    if (audio.paused) forcePlayAfterSeek();
+    setPrimaryIcon(true);
   }
+
+  // Belt & braces: a couple of micro-retries if the first call raced the seek
+  setTimeout(()=>{ if (audio.paused) audio.play().catch(()=>{}); }, 90);
+  setTimeout(()=>{ if (audio.paused) audio.play().catch(()=>{}); }, 200);
+}
   function playWithCue(){ startPlayback(); }
 
   // Overlay = guaranteed user gesture
